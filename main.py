@@ -220,6 +220,14 @@ async def _scan_for_entry(cfg: BotConfig, bid: float, ask: float) -> None:
         return
 
     stop_dist = cfg.initial_stop_pips * cfg.pip_size
+    spread = ask - bid
+    if stop_dist <= spread:
+        log.warning(
+            "Spread (%.5f) is larger than your initial stop distance (%.5f). "
+            "Trade would open past its stop loss! Increase INITIAL_STOP_PIPS in .env. Skipping trade.",
+            spread, stop_dist
+        )
+        return
     if direction == Direction.BUY:
         entry_approx = ask
         sl = round(entry_approx - stop_dist, 2)
