@@ -90,6 +90,27 @@ class MT5Client:
             mt5.symbol_select(symbol, True)
         return info._asdict()
 
+    @staticmethod
+    def _rate_to_dict(rate: object) -> dict:
+        if isinstance(rate, dict):
+            return rate
+        if hasattr(rate, "_asdict"):
+            return rate._asdict()
+        if hasattr(rate, "tolist"):
+            rate = rate.tolist()
+        if isinstance(rate, (tuple, list)) and len(rate) >= 5:
+            return {
+                "time": rate[0],
+                "open": rate[1],
+                "high": rate[2],
+                "low": rate[3],
+                "close": rate[4],
+                "tick_volume": rate[5] if len(rate) > 5 else None,
+                "spread": rate[6] if len(rate) > 6 else None,
+                "real_volume": rate[7] if len(rate) > 7 else None,
+            }
+        raise MT5Error(f"Unsupported MT5 rate format: {type(rate).__name__}")
+
     def get_rates(self, symbol: str, timeframe: str, count: int) -> list:
         """
         Return the last `count` OHLCV bars as a list of dicts.
@@ -106,7 +127,7 @@ class MT5Client:
         rates = mt5.copy_rates_from_pos(symbol, tf, 0, count)
         if rates is None or len(rates) == 0:
             raise MT5Error(f"copy_rates_from_pos failed: {mt5.last_error()}")
-        return [dict(r) for r in rates]
+        return [self._rate_to_dict(r) for r in rates]
 
     # ── Positions ────────────────────────────────────────────
 
@@ -129,8 +150,29 @@ class MT5Client:
         tick = self.symbol_info_tick(symbol)
         sym = self.symbol_info(symbol)
 
+        point = sym["point"]
+        digits = sym["digits"]
+        # stop_level = sym["trade_stops_level"] * point
+        stop_level = max(sym["trade_stops_level"] * point, 50 * point)
+
         order_type = mt5.ORDER_TYPE_BUY if direction == "buy" else mt5.ORDER_TYPE_SELL
+
         price = tick["ask"] if direction == "buy" else tick["bid"]
+
+        # Ensure SL respects broker minimum stop distance
+        if direction == "buy":
+            if price - sl < stop_level:
+                sl = price - stop_level
+        else:
+            if sl - price < stop_level:
+                sl = price + stop_level
+
+        # Round to symbol precision
+        price = round(price, digits)
+        sl = round(sl, digits)
+
+        # order_type = mt5.ORDER_TYPE_BUY if direction == "buy" else mt5.ORDER_TYPE_SELL
+        # price = tick["ask"] if direction == "buy" else tick["bid"]
 
         # Prefer the symbol's native filling mode; fall back to IOC
         filling_modes = sym.get("filling_mode", mt5.ORDER_FILLING_IOC)
@@ -155,6 +197,16 @@ class MT5Client:
             "type_time": mt5.ORDER_TIME_GTC,
             "type_filling": filling,
         }
+
+        log.info(
+            "Order Check | Bid=%.5f Ask=%.5f Price=%.5f SL=%.5f StopLevel=%d Point=%f",
+            tick["bid"],
+            tick["ask"],
+            price,
+            sl,
+            sym["trade_stops_level"],
+            point,
+        )
 
         result = mt5.order_send(request)
         if result is None or result.retcode != mt5.TRADE_RETCODE_DONE:

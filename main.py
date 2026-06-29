@@ -195,6 +195,11 @@ async def _scan_for_entry(cfg: BotConfig, bid: float, ask: float) -> None:
     rates = _state.client.get_rates(cfg.symbol, cfg.timeframe, cfg.bars_to_fetch)
     sig = compute_signals(rates, cfg.ema_fast, cfg.ema_slow, cfg.adx_period)
 
+    log.info(
+        "Scan: ADX=%.1f thresh=%.1f bull_cross=%s bear_cross=%s close=%.5f",
+        sig["adx"], _state.adx_threshold, sig["bull_cross"], sig["bear_cross"], sig["close"],
+    )
+
     if sig["adx"] < _state.adx_threshold:
         return
 
