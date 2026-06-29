@@ -161,11 +161,11 @@ class MT5Client:
 
         # Ensure SL respects broker minimum stop distance
         if direction == "buy":
-            if price - sl < stop_level:
-                sl = price - stop_level
+            if tick["bid"] - sl < stop_level:
+                sl = tick["bid"] - stop_level
         else:
-            if sl - price < stop_level:
-                sl = price + stop_level
+            if sl - tick["ask"] < stop_level:
+                sl = tick["ask"] + stop_level
 
         # Round to symbol precision
         price = round(price, digits)
@@ -220,6 +220,29 @@ class MT5Client:
 
     def modify_position_sl(self, position_ticket: int, symbol: str, new_sl: float) -> None:
         self._check()
+
+        # Enforce broker minimum stop distance for modifications
+        tick = self.symbol_info_tick(symbol)
+        sym = self.symbol_info(symbol)
+        point = sym["point"]
+        digits = sym["digits"]
+        stop_level = max(sym["trade_stops_level"] * point, 50 * point)
+
+        # Get position to check direction
+        positions = mt5.positions_get(ticket=position_ticket)
+        if positions:
+            pos = positions[0]
+            if pos.type == mt5.POSITION_TYPE_BUY:
+                max_sl = tick["bid"] - stop_level
+                if new_sl > max_sl:
+                    new_sl = max_sl
+            elif pos.type == mt5.POSITION_TYPE_SELL:
+                min_sl = tick["ask"] + stop_level
+                if new_sl < min_sl:
+                    new_sl = min_sl
+
+        new_sl = round(new_sl, digits)
+
         request = {
             "action": mt5.TRADE_ACTION_SLTP,
             "position": position_ticket,
@@ -230,7 +253,8 @@ class MT5Client:
         result = mt5.order_send(request)
         if result is None or result.retcode != mt5.TRADE_RETCODE_DONE:
             code = result.retcode if result else "None"
-            raise MT5Error(f"modify_position_sl failed — retcode={code}")
+            msg = result.comment if result else ""
+            raise MT5Error(f"modify_position_sl failed — retcode={code}, comment={msg!r}")
         log.debug("SL updated  ticket=%d  new_sl=%.5f", position_ticket, new_sl)
 
     # ── Trade history ────────────────────────────────────────
