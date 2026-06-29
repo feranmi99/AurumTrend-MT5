@@ -58,6 +58,7 @@ def _load_config() -> BotConfig:
         timeframe=os.environ.get("TIMEFRAME", "M5"),
         poll_interval_seconds=int(os.environ.get("POLL_INTERVAL_SECONDS", "5")),
         bars_to_fetch=int(os.environ.get("BARS_TO_FETCH", "100")),
+        max_concurrent_trades=int(os.environ.get("MAX_CONCURRENT_TRADES", "5")),
         tuning_review_every_n_trades=int(os.environ.get("TUNING_REVIEW_EVERY_N_TRADES", "20")),
         adx_tune_step=float(os.environ.get("ADX_TUNE_STEP", "1.0")),
         auto_apply_tuning=os.environ.get("AUTO_APPLY_TUNING", "false").lower() == "true",
@@ -71,17 +72,13 @@ class _BotState:
         self.running: bool = False
         self.config: Optional[BotConfig] = None
         self.client: Optional[MT5Client] = None
-        self.position: Optional[PositionState] = None
-        self.mt5_ticket: Optional[int] = None
+        self.positions: dict[int, PositionState] = {}
         self.error: Optional[str] = None
         self.closed_trades_count: int = 0
         self.last_tuning_check_count: int = 0
         # Live ADX threshold — may be updated by tuning approval without restart
         self.adx_threshold: float = 20.0
-
-    @property
-    def in_position(self) -> bool:
-        return self.position is not None
+        self.last_signal_time: int = 0
 
 
 _state = _BotState()
@@ -154,38 +151,36 @@ async def _bot_loop() -> None:
 
 
 def _reconcile_existing_position(cfg: BotConfig) -> None:
-    """If MT5 already has an open position (e.g., bot restarted mid-trade), track it."""
+    """If MT5 already has open positions (e.g., bot restarted mid-trade), track them."""
     positions = _state.client.get_positions(cfg.symbol)
-    if not positions:
-        return
-    pos = positions[0]
-    ticket = pos["ticket"]
-    direction = Direction.BUY if pos["type"] == 0 else Direction.SELL
-    sl = pos["sl"] or (pos["price_open"] - cfg.initial_stop_pips * cfg.pip_size
-                       if direction == Direction.BUY
-                       else pos["price_open"] + cfg.initial_stop_pips * cfg.pip_size)
-    _state.position = PositionState(
-        direction=direction,
-        entry_price=pos["price_open"],
-        initial_stop=sl,
-        stop_level=sl,
-        adx_at_entry=0.0,
-        entry_time=datetime.utcfromtimestamp(pos["time"]),
-    )
-    _state.mt5_ticket = ticket
-    log.warning(
-        "Reconciled existing MT5 position: ticket=%d %s @ %.5f  SL=%.5f",
-        ticket, direction.value, pos["price_open"], sl,
-    )
+    for pos in positions:
+        ticket = pos["ticket"]
+        direction = Direction.BUY if pos["type"] == 0 else Direction.SELL
+        sl = pos["sl"] or (pos["price_open"] - cfg.initial_stop_pips * cfg.pip_size
+                           if direction == Direction.BUY
+                           else pos["price_open"] + cfg.initial_stop_pips * cfg.pip_size)
+        _state.positions[ticket] = PositionState(
+            direction=direction,
+            entry_price=pos["price_open"],
+            initial_stop=sl,
+            stop_level=sl,
+            adx_at_entry=0.0,
+            entry_time=datetime.utcfromtimestamp(pos["time"]),
+        )
+        log.warning(
+            "Reconciled existing MT5 position: ticket=%d %s @ %.5f  SL=%.5f",
+            ticket, direction.value, pos["price_open"], sl,
+        )
 
 
 async def _tick(cfg: BotConfig) -> None:
     tick = _state.client.symbol_info_tick(cfg.symbol)
     bid, ask = tick["bid"], tick["ask"]
 
-    if _state.in_position:
-        await _manage_position(cfg, bid, ask)
-    else:
+    for ticket in list(_state.positions.keys()):
+        await _manage_position(cfg, ticket, bid, ask)
+
+    if len(_state.positions) < cfg.max_concurrent_trades:
         await _scan_for_entry(cfg, bid, ask)
 
     _maybe_run_tuning(cfg)
@@ -212,6 +207,10 @@ async def _scan_for_entry(cfg: BotConfig, bid: float, ask: float) -> None:
     if direction is None:
         return
 
+    sig_time = sig.get("time", 0)
+    if sig_time <= _state.last_signal_time:
+        return
+
     stop_dist = cfg.initial_stop_pips * cfg.pip_size
     if direction == Direction.BUY:
         entry_approx = ask
@@ -235,53 +234,58 @@ async def _scan_for_entry(cfg: BotConfig, bid: float, ask: float) -> None:
     actual_entry = result.get("price", entry_approx)
     ticket = result.get("order")
 
-    _state.mt5_ticket = ticket
-    _state.position = PositionState(
-        direction=direction,
-        entry_price=actual_entry,
-        initial_stop=sl,
-        stop_level=sl,
-        adx_at_entry=sig["adx"],
-        entry_time=datetime.utcnow(),
-    )
-    log.info("Position open — ticket=%s  entry=%.5f  SL=%.5f", ticket, actual_entry, sl)
+    if ticket is not None:
+        _state.positions[ticket] = PositionState(
+            direction=direction,
+            entry_price=actual_entry,
+            initial_stop=sl,
+            stop_level=sl,
+            adx_at_entry=sig["adx"],
+            entry_time=datetime.utcnow(),
+        )
+        _state.last_signal_time = sig_time
+        log.info("Position open — ticket=%s  entry=%.5f  SL=%.5f", ticket, actual_entry, sl)
 
 
-async def _manage_position(cfg: BotConfig, bid: float, ask: float) -> None:
+async def _manage_position(cfg: BotConfig, ticket: int, bid: float, ask: float) -> None:
     # Check whether MT5 still holds the position
     positions = _state.client.get_positions(cfg.symbol)
-    mt5_pos = next((p for p in positions if p["ticket"] == _state.mt5_ticket), None)
+    mt5_pos = next((p for p in positions if p["ticket"] == ticket), None)
 
     if mt5_pos is None:
         # MT5 closed it (stop hit server-side, or manual intervention)
-        _close_and_log(cfg)
+        _close_and_log(cfg, ticket)
         return
 
-    old_stop = _state.position.stop_level
-    _state.position, _ = update_trailing_stop(
-        _state.position, bid, ask, cfg.trail_pips, cfg.pip_size
+    pos_state = _state.positions[ticket]
+    old_stop = pos_state.stop_level
+    updated_pos, _ = update_trailing_stop(
+        pos_state, bid, ask, cfg.trail_pips, cfg.pip_size
     )
+    _state.positions[ticket] = updated_pos
 
-    if _state.position.stop_level != old_stop:
-        new_sl = round(_state.position.stop_level, 2)
+    if updated_pos.stop_level != old_stop:
+        new_sl = round(updated_pos.stop_level, 2)
         try:
-            _state.client.modify_position_sl(_state.mt5_ticket, cfg.symbol, new_sl)
-            log.debug("Trailing SL → %.5f", new_sl)
+            _state.client.modify_position_sl(ticket, cfg.symbol, new_sl)
+            log.debug("Trailing SL → %.5f for ticket=%d", new_sl, ticket)
         except MT5Error as exc:
-            log.warning("Could not update SL in MT5: %s", exc)
+            log.warning("Could not update SL in MT5 for ticket=%d: %s", ticket, exc)
 
 
-def _close_and_log(cfg: BotConfig) -> None:
-    pos = _state.position
+def _close_and_log(cfg: BotConfig, ticket: int) -> None:
+    pos = _state.positions.pop(ticket, None)
+    if pos is None:
+        return
+        
     reason = classify_exit(pos)
 
     # Try to get actual close price from MT5 deal history
     close_deal = None
-    if _state.mt5_ticket is not None:
-        try:
-            close_deal = _state.client.get_close_deal(_state.mt5_ticket)
-        except MT5Error:
-            pass
+    try:
+        close_deal = _state.client.get_close_deal(ticket)
+    except MT5Error:
+        pass
 
     if close_deal:
         exit_price = close_deal["price"]
@@ -316,12 +320,9 @@ def _close_and_log(cfg: BotConfig) -> None:
 
     log.info(
         "Trade closed [db_id=%d] ticket=%s  %s  %+.1f pips  reason=%s  equity=%s",
-        trade_id, _state.mt5_ticket, pos.direction.value,
+        trade_id, ticket, pos.direction.value,
         pips, reason, f"{equity:.2f}" if equity else "n/a",
     )
-
-    _state.position = None
-    _state.mt5_ticket = None
 
 
 def _maybe_run_tuning(cfg: BotConfig) -> None:
@@ -384,13 +385,9 @@ async def status() -> BotStatus:
         except MT5Error:
             pass
 
-    pos = _state.position
     return BotStatus(
         running=_state.running,
-        in_position=_state.in_position,
-        current_direction=pos.direction.value if pos else None,
-        current_entry_price=pos.entry_price if pos else None,
-        current_stop=pos.stop_level if pos else None,
+        active_positions=len(_state.positions),
         current_adx_threshold=_state.adx_threshold,
         total_closed_trades=_state.closed_trades_count,
         account_equity=equity,

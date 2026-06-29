@@ -103,6 +103,7 @@ def compute_signals(
         "ema_fast": float(fast.iloc[-1]),
         "ema_slow": float(slow.iloc[-1]),
         "close": float(df["Close"].iloc[-1]),
+        "time": int(bars[-1]["time"]) if len(bars) > 0 else 0,
     }
 
 

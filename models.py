@@ -35,6 +35,7 @@ class BotConfig(BaseModel):
     timeframe: str
     poll_interval_seconds: int
     bars_to_fetch: int
+    max_concurrent_trades: int
     tuning_review_every_n_trades: int
     adx_tune_step: float
     auto_apply_tuning: bool
@@ -52,10 +53,7 @@ class TuningSuggestion(BaseModel):
 
 class BotStatus(BaseModel):
     running: bool
-    in_position: bool
-    current_direction: Optional[str] = None
-    current_entry_price: Optional[float] = None
-    current_stop: Optional[float] = None
+    active_positions: int
     current_adx_threshold: float
     total_closed_trades: int
     account_equity: Optional[float] = None
