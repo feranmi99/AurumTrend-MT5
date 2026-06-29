@@ -96,9 +96,23 @@ def compute_signals(
     bull_cross = bool(diff.iloc[-2] <= 0 and diff.iloc[-1] > 0)
     bear_cross = bool(diff.iloc[-2] >= 0 and diff.iloc[-1] < 0)
 
+    # Bullish Pullback
+    bull_trend = bool(diff.iloc[-1] > 0 and diff.iloc[-2] > 0)
+    bull_touch = bool((df["Low"].iloc[-1] <= fast.iloc[-1]) or (df["Low"].iloc[-2] <= fast.iloc[-2]))
+    bull_bounce = bool((df["Close"].iloc[-1] > df["Open"].iloc[-1]) and (df["Close"].iloc[-1] > fast.iloc[-1]))
+    bull_pullback = bull_trend and bull_touch and bull_bounce
+
+    # Bearish Pullback
+    bear_trend = bool(diff.iloc[-1] < 0 and diff.iloc[-2] < 0)
+    bear_touch = bool((df["High"].iloc[-1] >= fast.iloc[-1]) or (df["High"].iloc[-2] >= fast.iloc[-2]))
+    bear_bounce = bool((df["Close"].iloc[-1] < df["Open"].iloc[-1]) and (df["Close"].iloc[-1] < fast.iloc[-1]))
+    bear_pullback = bear_trend and bear_touch and bear_bounce
+
     return {
         "bull_cross": bull_cross,
         "bear_cross": bear_cross,
+        "bull_pullback": bull_pullback,
+        "bear_pullback": bear_pullback,
         "adx": float(adx_series.iloc[-1]),
         "ema_fast": float(fast.iloc[-1]),
         "ema_slow": float(slow.iloc[-1]),

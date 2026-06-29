@@ -191,18 +191,26 @@ async def _scan_for_entry(cfg: BotConfig, bid: float, ask: float) -> None:
     sig = compute_signals(rates, cfg.ema_fast, cfg.ema_slow, cfg.adx_period)
 
     log.info(
-        "Scan: ADX=%.1f thresh=%.1f bull_cross=%s bear_cross=%s close=%.5f",
-        sig["adx"], _state.adx_threshold, sig["bull_cross"], sig["bear_cross"], sig["close"],
+        "Scan: ADX=%.1f thresh=%.1f cross(bull=%s bear=%s) pull(bull=%s bear=%s) close=%.5f",
+        sig["adx"], _state.adx_threshold, sig["bull_cross"], sig["bear_cross"],
+        sig.get("bull_pullback", False), sig.get("bear_pullback", False), sig["close"],
     )
 
     if sig["adx"] < _state.adx_threshold:
         return
 
     direction: Optional[Direction] = None
+    reason = "cross"
     if sig["bull_cross"]:
         direction = Direction.BUY
+    elif sig.get("bull_pullback", False):
+        direction = Direction.BUY
+        reason = "pullback"
     elif sig["bear_cross"]:
         direction = Direction.SELL
+    elif sig.get("bear_pullback", False):
+        direction = Direction.SELL
+        reason = "pullback"
 
     if direction is None:
         return
@@ -220,8 +228,8 @@ async def _scan_for_entry(cfg: BotConfig, bid: float, ask: float) -> None:
         sl = round(entry_approx + stop_dist, 2)
 
     log.info(
-        "Signal: %s  ADX=%.1f  close=%.5f  proposed_sl=%.5f",
-        direction.value, sig["adx"], sig["close"], sl,
+        "Signal: %s (%s)  ADX=%.1f  close=%.5f  proposed_sl=%.5f",
+        direction.value, reason, sig["adx"], sig["close"], sl,
     )
 
     result = _state.client.place_market_order(
