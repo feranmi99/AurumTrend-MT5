@@ -39,8 +39,8 @@ The algorithm includes a background `tuning.py` module. Every `N` closed trades,
 ### Setup
 1. Clone the repository:
    ```bash
-   git clone https://github.com/feranmi99/k9.git
-   cd k9
+   git clone https://github.com/feranmi99/AurumTrend-MT5.git
+   cd AurumTrend-MT5
    ```
 2. Create and activate a virtual environment:
    ```bash
