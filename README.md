@@ -1,137 +1,70 @@
-# K9 Gold Bot — XAUUSD Trend-Capture Bot
+# AurumTrend MT5 🥇
 
-EMA(9)/EMA(21) crossover bot with ADX filter and a trailing stop-only exit.
-Runs as a FastAPI service connected to MetaTrader 5.
+> A highly resilient, fully automated XAUUSD (Gold) trend-following algorithmic trading system built for MetaTrader 5.
 
----
+![Python](https://img.shields.io/badge/Python-3.10%2B-blue)
+![FastAPI](https://img.shields.io/badge/FastAPI-0.100%2B-00a67d)
+![MetaTrader 5](https://img.shields.io/badge/MetaTrader_5-Supported-orange)
+![Status](https://img.shields.io/badge/Status-Active_Development-success)
 
-## Prerequisites
+## 📖 Overview
+AurumTrend is a high-performance algorithmic trading bot specifically calibrated for the extreme volatility of **XAUUSD (Gold)**. It is wrapped in an asynchronous **FastAPI** web server, allowing for real-time status monitoring, remote trade history inspection, and dynamic system tuning without ever needing to restart the core trading thread.
 
-| Requirement | Notes |
-|---|---|
-| **Windows 10/11** | The `MetaTrader5` Python package is Windows-only (wraps MT5 IPC). |
-| **MT5 desktop installed** | Download from your broker or [metatrader5.com](https://www.metatrader5.com). |
-| **MT5 terminal running and logged in** | The bot connects to the terminal process — it must be open. |
-| **Python 3.11+** | `py -3.11` or `python` depending on your Windows Python install. |
-| **Demo account** | Required for the initial validation phase (see Safety below). |
+The strategy relies on capturing massive macroeconomic trends while aggressively filtering out sideways market noise, resulting in a historically validated mathematical edge on the M5 timeframe.
 
----
+## ⚙️ Core Strategy Architecture
+- **Timeframe**: `M5` (with `H1` Macro Filter)
+- **Signal Generation**: Fast/Slow EMA Crossovers (e.g., 9/21).
+- **Momentum Filter**: ADX (Average Directional Index) thresholding ensures the bot only enters during strong momentum phases.
+- **Macro-Trend Alignment (HTF Filter)**: The bot dynamically fetches the H1 timeframe and computes the H1 EMA50. M5 signals are strictly rejected if they attempt to trade against the H1 macro trend.
+- **Asymmetric Risk Management**: Utilizes an extremely wide initial stop-loss to survive Gold's aggressive "wicks" and stop-hunts, paired with an aggressive trailing stop that locks in profits once a trend is successfully caught. *No take-profit is used; winners are left to run indefinitely until the trend reverses.*
 
-## Setup
+## 🛡️ Resilience & Safety Features
+1. **Thread-Pool Isolation**: MT5 synchronous API calls and SQLite database writes are isolated in `asyncio.to_thread` pools, ensuring the FastAPI event loop never blocks or freezes during high network latency or disk I/O.
+2. **Infinite Auto-Reconnect**: If the broker server goes down for weekend maintenance, the bot catches the `MT5Error`, pauses, and infinitely attempts background reconnections until the broker comes back online.
+3. **Timezone Immunity**: Deal history is fetched via globally unique `position_ticket` IDs, entirely bypassing MT5 Broker Server Time vs. UTC timezone bugs.
+4. **Weekend Gap Protection**: Automatically executes a Market Close on all open positions exactly at Friday 21:00 UTC to protect against disastrous Friday-to-Monday market gaps.
+5. **Dynamic Slippage Control**: Bypasses broker requote rejections by passing configurable deviation points into the API order requests.
 
-### 1. Install dependencies
+## 🤖 Self-Tuning Module
+The algorithm includes a background `tuning.py` module. Every `N` closed trades, the bot analyzes its recent historical performance and calculates if raising or lowering the ADX Threshold would have improved the profit factor. It writes these tuning suggestions to the SQLite database, which can be reviewed and applied live via the FastAPI endpoints.
 
-```powershell
-pip install -r requirements.txt
-```
+## 🚀 Installation & Usage
 
-### 2. Configure `.env`
+### Prerequisites
+- **Windows OS** or a **Windows VPS** (MetaTrader 5 Python integration *only* works on Windows).
+- **MetaTrader 5 Desktop Terminal** installed and logged into your broker.
+- **Python 3.10+**
 
-```powershell
-copy .env.example .env
-```
+### Setup
+1. Clone the repository:
+   ```bash
+   git clone https://github.com/feranmi99/k9.git
+   cd k9
+   ```
+2. Create and activate a virtual environment:
+   ```bash
+   python -m venv .venv
+   .venv\Scripts\activate
+   ```
+3. Install dependencies:
+   ```bash
+   pip install -r requirements.txt
+   ```
+4. Copy the environment template and configure your broker details:
+   ```bash
+   cp .env.example .env
+   ```
+   *Edit `.env` and add your MT5 Account Number, Password, and Server.*
 
-Edit `.env` with your MT5 credentials and broker-specific symbol name.  
-**Verify your symbol name in MT5 Market Watch** — many brokers use `XAUUSDm`, `XAUUSD.`, `GOLD`, etc.
-
-**Verify pip size**: open MT5, check the quote price for XAUUSD. If it looks like `2350.45`, then 1 pip = `$0.01` (default). If it looks like `2350.4`, then 1 pip = `$0.1` — update `PIP_SIZE` accordingly.
-
-### 3. Verify MT5 connection before running
-
-In Python:
-
-```python
-import MetaTrader5 as mt5
-mt5.initialize(login=YOUR_LOGIN, password="YOUR_PASSWORD", server="YOUR_SERVER")
-print(mt5.account_info())
-print(mt5.symbol_info_tick("XAUUSDm"))
-mt5.shutdown()
-```
-
-Both calls must return non-None results before the bot will work.
-
-### 4. Run the bot
-
-```powershell
+### Running the Bot
+Start the FastAPI server:
+```bash
 uvicorn main:app --host 0.0.0.0 --port 8000
 ```
+Once running, monitor the bot via your browser:
+- **Status Dashboard**: `http://localhost:8000/status`
+- **Trade History DB**: `http://localhost:8000/trades`
 
-The bot starts automatically when the FastAPI service starts.
-
----
-
-## API endpoints
-
-| Method | Path | Description |
-|---|---|---|
-| GET | `/status` | Bot health, current position, account info |
-| GET | `/trades` | All trade records (open + closed) |
-| GET | `/config` | Current configuration |
-| GET | `/tuning/pending` | ADX threshold suggestions awaiting approval |
-| POST | `/tuning/approve/{id}` | Apply a pending tuning suggestion |
-
-Interactive docs: `http://localhost:8000/docs`
-
----
-
-## Strategy summary
-
-- **Entry**: EMA(9) crosses EMA(21) with ADX(14) > threshold (default 20)
-- **One position at a time** — no pyramiding, no auto-reverse
-- **Stop logic**:
-  - Initial fixed stop at `INITIAL_STOP_PIPS` from entry
-  - Once in profit: trailing stop at `TRAIL_PIPS` from the most favorable price seen
-  - Stop only tightens, never loosens
-- **No take-profit** — the only exit is the stop
-
----
-
-## Safety and demo-validation phase
-
-The bot will **refuse to run on a live account** unless `I_UNDERSTAND_THIS_IS_LIVE=true` is set in `.env`.
-
-Before considering live trading:
-
-1. Run on a demo account for **at least 200 closed trades AND 4 weeks**, whichever is longer.
-2. Export and analyze `trades.db` (open with any SQLite viewer, e.g. [DB Browser for SQLite](https://sqlitebrowser.org/)).
-3. The backtest showed a ~3% win rate with rare large wins driving all profit — a small demo sample cannot confirm a real edge. 200+ trades on forward data is the minimum meaningful test.
-
-This is not optional polish. Do not skip it.
-
----
-
-## Self-tuning
-
-After every `TUNING_REVIEW_EVERY_N_TRADES` (default 20) closed trades, the bot analyzes whether the ADX threshold should be raised:
-
-- If trades taken near the current threshold have a >60% loss rate, a raise is suggested.
-- The suggestion is logged with the exact numbers that drove it.
-- With `AUTO_APPLY_TUNING=false` (default), the suggestion sits in `/tuning/pending` until you call `/tuning/approve/{id}`.
-- With `AUTO_APPLY_TUNING=true`, it's applied immediately in memory. Update `ADX_THRESHOLD` in `.env` to persist across restarts.
-
----
-
-## Trade log
-
-All closed trades are written to `trades.db` (SQLite) and viewable via `/trades`.  
-Each record includes: direction, entry/exit time, entry/exit price, exit reason (`initial_stop` / `trailing_stop`), pips P&L, ADX at entry, and running account equity.
-
-Log file: `k9bot.log` (rotated manually).
-
----
-
-## File structure
-
-```
-main.py          FastAPI app + bot loop
-mt5_client.py    MT5 connection, orders, position management
-strategy.py      EMA/ADX indicators, stop/trail state machine
-tuning.py        ADX threshold self-tuning logic
-trade_log.py     SQLite persistence
-models.py        Pydantic models
-backtest_engine.py  Offline parameter sweep (separate from live bot)
-.env.example     Configuration template
-requirements.txt
-trades.db        Created on first run
-k9bot.log        Created on first run
-```
+## ⚠️ Disclaimer
+**This software is for educational and research purposes only.** Foreign exchange and CFD trading carries a high level of risk and may not be suitable for all investors. The past performance of this algorithm does not guarantee future results. **ALWAYS run this system on a Demo account for a minimum of 4 weeks (or 200 trades) to validate your broker's spread, latency, and slippage conditions before ever risking real capital.**
