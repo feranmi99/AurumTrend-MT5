@@ -62,13 +62,14 @@ COMMISSION_PER_TRADE = 0.0  # In account currency, per round-trip trade. Set if 
 LOT_SIZE_UNITS = 100     # 1 standard lot XAUUSD = 100 oz. Used only for $ P&L conversion in summary.
 POSITION_SIZE_LOTS = 0.01  # Used only to convert pip P&L into a $ estimate at the end.
 
-INITIAL_STOP_OPTIONS_PIPS = [5, 7, 10]
-TRAIL_STOP_OPTIONS_PIPS = [5, 7, 10]
+INITIAL_STOP_OPTIONS_PIPS = [500]
+TRAIL_STOP_OPTIONS_PIPS = [150]
+HTF_FILTER_OPTIONS = [True, False]
 
 EMA_FAST = 9
 EMA_SLOW = 21
 ADX_PERIOD = 14
-ADX_THRESHOLD = 20   # Minimum trend strength to allow an entry. Tested as fixed; can be swept too.
+ADX_THRESHOLD = 5   # Updated to match .env
 
 
 # ============================================================
@@ -123,6 +124,11 @@ def prepare_indicators(df: pd.DataFrame) -> pd.DataFrame:
     df['bull_cross'] = (df['ema_diff_prev'] <= 0) & (df['ema_diff'] > 0)
     df['bear_cross'] = (df['ema_diff_prev'] >= 0) & (df['ema_diff'] < 0)
 
+    # Simulated H1 EMA50 on M5 chart (1 hour = 12 M5 bars, 50 hours = 600 bars)
+    df['HTF_EMA'] = compute_ema(df['Close'], 600)
+    df['htf_bull'] = df['Close'] > df['HTF_EMA']
+    df['htf_bear'] = df['Close'] < df['HTF_EMA']
+
     return df
 
 
@@ -143,7 +149,7 @@ class Trade:
 
 
 def simulate(df: pd.DataFrame, initial_stop_pips: float, trail_pips: float,
-             adx_threshold: float = ADX_THRESHOLD) -> list:
+             adx_threshold: float = ADX_THRESHOLD, htf_filter_enabled: bool = False) -> list:
     """
     Walk through bars in time order. One trade open at a time (no pyramiding,
     no overlapping positions — matches the user's description of a single bot
@@ -163,7 +169,11 @@ def simulate(df: pd.DataFrame, initial_stop_pips: float, trail_pips: float,
         if not in_position:
             if row['ADX'] < adx_threshold:
                 continue
+            
+            # Check entry conditions
             if row['bull_cross']:
+                if htf_filter_enabled and not row['htf_bull']:
+                    continue
                 entry_price = row['Close'] + (spread_cost / 2)  # pay half spread on entry (approx)
                 current = Trade(
                     direction='buy',
@@ -174,6 +184,8 @@ def simulate(df: pd.DataFrame, initial_stop_pips: float, trail_pips: float,
                 stop_level = current.initial_stop
                 in_position = True
             elif row['bear_cross']:
+                if htf_filter_enabled and not row['htf_bear']:
+                    continue
                 entry_price = row['Close'] - (spread_cost / 2)
                 current = Trade(
                     direction='sell',
@@ -340,13 +352,15 @@ def run_full_sweep(csv_path: str) -> pd.DataFrame:
     print(f"Resampled to {len(df_m5)} M5 bars")
 
     results = []
-    for timeframe, df_raw in [('M1', df_m1), ('M5', df_m5)]:
+    # Drop M1 from the loop, we only care about M5 now.
+    for timeframe, df_raw in [('M5', df_m5)]:
         df_ind = prepare_indicators(df_raw)
-        for init_stop, trail in itertools.product(INITIAL_STOP_OPTIONS_PIPS, TRAIL_STOP_OPTIONS_PIPS):
-            trades = simulate(df_ind, init_stop, trail)
-            summary = summarize(trades, init_stop, trail, timeframe)
+        for init_stop, trail, htf_enabled in itertools.product(INITIAL_STOP_OPTIONS_PIPS, TRAIL_STOP_OPTIONS_PIPS, HTF_FILTER_OPTIONS):
+            trades = simulate(df_ind, init_stop, trail, htf_filter_enabled=htf_enabled)
+            label = f"{timeframe} (HTF={'ON' if htf_enabled else 'OFF'})"
+            summary = summarize(trades, init_stop, trail, label)
             results.append(summary)
-            print(f"  [{timeframe}] stop={init_stop}p trail={trail}p -> "
+            print(f"  [{label}] stop={init_stop}p trail={trail}p -> "
                   f"trades={summary['total_trades']}, win%={summary['win_rate_pct']}, "
                   f"PF={summary['profit_factor']}, expectancy={summary['expectancy_pips']}p")
 

@@ -62,6 +62,10 @@ def _load_config() -> BotConfig:
         tuning_review_every_n_trades=int(os.environ.get("TUNING_REVIEW_EVERY_N_TRADES", "20")),
         adx_tune_step=float(os.environ.get("ADX_TUNE_STEP", "1.0")),
         auto_apply_tuning=os.environ.get("AUTO_APPLY_TUNING", "false").lower() == "true",
+        max_slippage_points=int(os.environ.get("MAX_SLIPPAGE_POINTS", "50")),
+        htf_filter_enabled=os.environ.get("HTF_FILTER_ENABLED", "true").lower() == "true",
+        htf_timeframe=os.environ.get("HTF_TIMEFRAME", "H1"),
+        htf_ema_period=int(os.environ.get("HTF_EMA_PERIOD", "50")),
     )
 
 
@@ -131,10 +135,20 @@ async def _bot_loop() -> None:
 
         while _state.running:
             try:
-                await _tick(cfg)
+                await asyncio.to_thread(_tick, cfg)
+                # Clear any lingering connection error if tick succeeds
+                if _state.error and "MT5 Error" in _state.error:
+                    _state.error = None
             except MT5Error as exc:
-                log.error("MT5 error: %s", exc)
-                _state.error = str(exc)
+                log.error("MT5 error: %s. Sleeping 30s and attempting reconnect...", exc)
+                _state.error = f"MT5 Error: {exc} (Reconnecting...)"
+                await asyncio.sleep(30)
+                try:
+                    if _state.running:
+                        await asyncio.to_thread(_state.client.connect)
+                        log.info("Reconnected to MT5 successfully.")
+                except Exception as reconnect_exc:
+                    log.error("Reconnect failed: %s", reconnect_exc)
             except Exception as exc:  # noqa: BLE001
                 log.exception("Unexpected error in tick: %s", exc)
                 _state.error = str(exc)
@@ -173,20 +187,42 @@ def _reconcile_existing_position(cfg: BotConfig) -> None:
         )
 
 
-async def _tick(cfg: BotConfig) -> None:
+def _is_weekend(now_utc: datetime) -> bool:
+    # Friday 21:00 UTC to Sunday 21:00 UTC
+    if now_utc.weekday() == 4 and now_utc.hour >= 21:
+        return True
+    if now_utc.weekday() == 5:
+        return True
+    if now_utc.weekday() == 6 and now_utc.hour < 21:
+        return True
+    return False
+
+
+def _tick(cfg: BotConfig) -> None:
+    now_utc = datetime.utcnow()
+    if _is_weekend(now_utc):
+        for ticket in list(_state.positions.keys()):
+            log.warning("Weekend auto-close triggered for ticket=%d", ticket)
+            try:
+                _state.client.close_position(ticket, cfg.symbol, deviation=cfg.max_slippage_points)
+            except Exception as exc:
+                log.error("Failed to auto-close ticket=%d: %s", ticket, exc)
+            _close_and_log(cfg, ticket)
+        return
+
     tick = _state.client.symbol_info_tick(cfg.symbol)
     bid, ask = tick["bid"], tick["ask"]
 
     for ticket in list(_state.positions.keys()):
-        await _manage_position(cfg, ticket, bid, ask)
+        _manage_position(cfg, ticket, bid, ask)
 
     if len(_state.positions) < cfg.max_concurrent_trades:
-        await _scan_for_entry(cfg, bid, ask)
+        _scan_for_entry(cfg, bid, ask)
 
     _maybe_run_tuning(cfg)
 
 
-async def _scan_for_entry(cfg: BotConfig, bid: float, ask: float) -> None:
+def _scan_for_entry(cfg: BotConfig, bid: float, ask: float) -> None:
     rates = _state.client.get_rates(cfg.symbol, cfg.timeframe, cfg.bars_to_fetch)
     sig = compute_signals(rates, cfg.ema_fast, cfg.ema_slow, cfg.adx_period)
 
@@ -214,6 +250,14 @@ async def _scan_for_entry(cfg: BotConfig, bid: float, ask: float) -> None:
 
     if direction is None:
         return
+
+    if cfg.htf_filter_enabled:
+        from strategy import get_htf_trend
+        htf_rates = _state.client.get_rates(cfg.symbol, cfg.htf_timeframe, cfg.htf_ema_period + 5)
+        htf_trend = get_htf_trend(htf_rates, cfg.htf_ema_period)
+        if htf_trend and direction != htf_trend:
+            log.info("Signal %s rejected by HTF filter (%s trend on %s)", direction.value, htf_trend.value, cfg.htf_timeframe)
+            return
 
     sig_time = sig.get("time", 0)
     if sig_time <= _state.last_signal_time:
@@ -245,6 +289,7 @@ async def _scan_for_entry(cfg: BotConfig, bid: float, ask: float) -> None:
         direction=direction.value,
         lot=cfg.lot_size,
         sl=sl,
+        deviation=cfg.max_slippage_points,
     )
 
     actual_entry = result.get("price", entry_approx)
@@ -263,7 +308,7 @@ async def _scan_for_entry(cfg: BotConfig, bid: float, ask: float) -> None:
         log.info("Position open — ticket=%s  entry=%.5f  SL=%.5f", ticket, actual_entry, sl)
 
 
-async def _manage_position(cfg: BotConfig, ticket: int, bid: float, ask: float) -> None:
+def _manage_position(cfg: BotConfig, ticket: int, bid: float, ask: float) -> None:
     # Check whether MT5 still holds the position
     positions = _state.client.get_positions(cfg.symbol)
     mt5_pos = next((p for p in positions if p["ticket"] == ticket), None)

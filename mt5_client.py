@@ -139,12 +139,7 @@ class MT5Client:
     # ── Orders ───────────────────────────────────────────────
 
     def place_market_order(
-        self,
-        symbol: str,
-        direction: str,
-        lot: float,
-        sl: float,
-        comment: str = "k9bot",
+        self, symbol: str, direction: str, lot: float, sl: float, comment: str = "k9bot", deviation: int = 20
     ) -> dict:
         self._check()
         tick = self.symbol_info_tick(symbol)
@@ -191,7 +186,7 @@ class MT5Client:
             "price": price,
             "sl": float(sl),
             "tp": 0.0,
-            "deviation": 20,
+            "deviation": deviation,
             "magic": 990099,
             "comment": comment,
             "type_time": mt5.ORDER_TIME_GTC,
@@ -257,20 +252,49 @@ class MT5Client:
             raise MT5Error(f"modify_position_sl failed — retcode={code}, comment={msg!r}")
         log.debug("SL updated  ticket=%d  new_sl=%.5f", position_ticket, new_sl)
 
-    # ── Trade history ────────────────────────────────────────
+    def close_position(self, position_ticket: int, symbol: str, deviation: int = 50) -> dict:
+        """Closes an open position by sending an opposite market deal."""
+        self._check()
+        positions = mt5.positions_get(ticket=position_ticket)
+        if not positions:
+            return {}
+        pos = positions[0]
+        tick = self.symbol_info_tick(symbol)
+        
+        order_type = mt5.ORDER_TYPE_SELL if pos.type == mt5.POSITION_TYPE_BUY else mt5.ORDER_TYPE_BUY
+        price = tick["bid"] if order_type == mt5.ORDER_TYPE_SELL else tick["ask"]
+        
+        request = {
+            "action": mt5.TRADE_ACTION_DEAL,
+            "position": position_ticket,
+            "symbol": symbol,
+            "volume": pos.volume,
+            "type": order_type,
+            "price": price,
+            "deviation": deviation,
+            "magic": 990099,
+            "comment": "k9bot autoclose",
+            "type_time": mt5.ORDER_TIME_GTC,
+            "type_filling": mt5.ORDER_FILLING_IOC,
+        }
+        result = mt5.order_send(request)
+        if result is None or result.retcode != mt5.TRADE_RETCODE_DONE:
+            code = result.retcode if result else "None"
+            msg = result.comment if result else ""
+            raise MT5Error(f"close_position failed — retcode={code}, comment={msg!r}")
+        return result._asdict()
 
-    def get_close_deal(self, position_ticket: int, lookback_hours: int = 24) -> Optional[dict]:
+    def get_close_deal(self, position_ticket: int) -> Optional[dict]:
         """
-        Return the closing deal for a position from recent deal history.
+        Return the closing deal for a position from deal history.
         Returns None if not found (position may still be open or history unavailable).
         """
         self._check()
-        now = datetime.utcnow()
-        from_date = now - timedelta(hours=lookback_hours)
-        deals = mt5.history_deals_get(from_date, now)
+        # Fetching by position ID avoids all timezone-offset bugs and is much faster
+        deals = mt5.history_deals_get(position=position_ticket)
         if deals is None:
             return None
         for deal in deals:
-            if deal.position_id == position_ticket and deal.entry == mt5.DEAL_ENTRY_OUT:
+            if deal.entry == mt5.DEAL_ENTRY_OUT:
                 return deal._asdict()
         return None

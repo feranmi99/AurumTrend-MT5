@@ -39,6 +39,10 @@ class BotConfig(BaseModel):
     tuning_review_every_n_trades: int
     adx_tune_step: float
     auto_apply_tuning: bool
+    max_slippage_points: int
+    htf_filter_enabled: bool
+    htf_timeframe: str
+    htf_ema_period: int
 
 
 class TuningSuggestion(BaseModel):

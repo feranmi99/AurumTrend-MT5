@@ -19,6 +19,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 from backtest_engine import (
     INITIAL_STOP_OPTIONS_PIPS,
     TRAIL_STOP_OPTIONS_PIPS,
+    HTF_FILTER_OPTIONS,
     ADX_THRESHOLD,
     load_mt5_csv,
     resample_to_m5,
@@ -29,19 +30,20 @@ from backtest_engine import (
 
 BASE = os.path.dirname(__file__)
 
-M1_1YR  = os.path.join(BASE, '1782000742730_XAUUSDm_M1_1yr_export.csv')
-M5_1YR  = os.path.join(BASE, '1782000629801_XAUUSDm_M5_1yr_export.csv')
+M1_1YR  = os.path.join(BASE, 'data', '1782000742730_XAUUSDm_M1_1yr_export.csv')
+M5_1YR  = os.path.join(BASE, 'data', '1782000629801_XAUUSDm_M5_1yr_export.csv')
 
 
 def sweep(label: str, df_raw: pd.DataFrame) -> list:
     df_ind = prepare_indicators(df_raw)
     rows = []
-    for init_stop, trail in itertools.product(INITIAL_STOP_OPTIONS_PIPS, TRAIL_STOP_OPTIONS_PIPS):
-        trades = simulate(df_ind, init_stop, trail)
-        summary = summarize(trades, init_stop, trail, label)
+    for init_stop, trail, htf_enabled in itertools.product(INITIAL_STOP_OPTIONS_PIPS, TRAIL_STOP_OPTIONS_PIPS, HTF_FILTER_OPTIONS):
+        trades = simulate(df_ind, init_stop, trail, htf_filter_enabled=htf_enabled)
+        current_label = f"{label} (HTF={'ON' if htf_enabled else 'OFF'})"
+        summary = summarize(trades, init_stop, trail, current_label)
         rows.append(summary)
         print(
-            f"  [{label}] stop={init_stop}p trail={trail}p → "
+            f"  [{current_label}] stop={init_stop}p trail={trail}p → "
             f"trades={summary['total_trades']}, "
             f"win%={summary['win_rate_pct']}, "
             f"PF={summary['profit_factor']}, "

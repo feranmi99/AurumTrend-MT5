@@ -121,6 +121,29 @@ def compute_signals(
     }
 
 
+def get_htf_trend(rates: list, ema_period: int) -> Optional[Direction]:
+    """
+    Computes the HTF trend based on Close relative to EMA.
+    Returns Direction.BUY if Close > EMA, Direction.SELL if Close < EMA.
+    """
+    bars = rates[:-1] if len(rates) > 1 else rates
+    if len(bars) < ema_period + 1:
+        return None
+        
+    df = pd.DataFrame(bars)
+    df = df.rename(columns={"close": "Close"}).astype(float)
+    
+    ema = _ema(df["Close"], ema_period)
+    last_close = float(df["Close"].iloc[-1])
+    last_ema = float(ema.iloc[-1])
+    
+    if last_close > last_ema:
+        return Direction.BUY
+    elif last_close < last_ema:
+        return Direction.SELL
+    return None
+
+
 # ── Stop / trail state machine ────────────────────────────────
 
 def update_trailing_stop(
@@ -150,21 +173,21 @@ def update_trailing_stop(
     if pos.direction == Direction.BUY:
         if bid <= pos.stop_level:
             return pos, True
-        favorable = ask - pos.entry_price
+        favorable = bid - pos.entry_price
         if favorable > pos.max_favorable_excursion:
             pos.max_favorable_excursion = favorable
         if favorable > 0:
-            candidate = ask - trail_dist
+            candidate = bid - trail_dist
             if candidate > pos.stop_level:
                 pos.stop_level = candidate
     else:
         if ask >= pos.stop_level:
             return pos, True
-        favorable = pos.entry_price - bid
+        favorable = pos.entry_price - ask
         if favorable > pos.max_favorable_excursion:
             pos.max_favorable_excursion = favorable
         if favorable > 0:
-            candidate = bid + trail_dist
+            candidate = ask + trail_dist
             if candidate < pos.stop_level:
                 pos.stop_level = candidate
 
