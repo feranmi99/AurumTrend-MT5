@@ -1,0 +1,10 @@
+2026-07-11 11:23:13,631 [INFO] k9bot: Bot starting.
+2026-07-11 11:23:13,633 [ERROR] k9bot: Fatal bot error: MetaTrader5 package is not installed. Run 'pip install MetaTrader5' on a Windows machine with MT5 desktop installed.
+Traceback (most recent call last):
+  File "/Users/Apple/Desktop/Python/Project-k9/main.py", line 102, in _bot_loop
+    _state.client = MT5Client(
+  File "/Users/Apple/Desktop/Python/Project-k9/mt5_client.py", line 38, in __init__
+    _require_mt5()
+  File "/Users/Apple/Desktop/Python/Project-k9/mt5_client.py", line 30, in _require_mt5
+    raise MT5Error(
+mt5_client.MT5Error: MetaTrader5 package is not installed. Run 'pip install MetaTrader5' on a Windows machine with MT5 desktop installed.

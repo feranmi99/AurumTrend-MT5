@@ -298,3 +298,173 @@ class MT5Client:
             if deal.entry == mt5.DEAL_ENTRY_OUT:
                 return deal._asdict()
         return None
+
+    # ── Grid Bot: Limit Orders ───────────────────────────────
+
+    def place_limit_order(
+        self,
+        symbol: str,
+        direction: str,
+        lot: float,
+        price: float,
+        tp: float,
+        sl: float = 0.0,
+        comment: str = "k9grid",
+        deviation: int = 50,
+    ) -> dict:
+        """
+        Place a pending limit order (BUY LIMIT or SELL LIMIT).
+
+        Args:
+            symbol: Trading symbol (e.g., XAUUSDm)
+            direction: 'buy' or 'sell'
+            lot: Position volume
+            price: Limit order price
+            tp: Take-profit price
+            sl: Stop-loss price (0 = no SL)
+            comment: Order comment
+            deviation: Max slippage in points
+
+        Returns:
+            Order result dict from MT5
+        """
+        self._check()
+        sym = self.symbol_info(symbol)
+        digits = sym["digits"]
+
+        if direction == "buy":
+            order_type = mt5.ORDER_TYPE_BUY_LIMIT
+        else:
+            order_type = mt5.ORDER_TYPE_SELL_LIMIT
+
+        price = round(price, digits)
+        tp = round(tp, digits)
+        sl = round(sl, digits) if sl else 0.0
+
+        # Detect filling mode
+        filling_modes = sym.get("filling_mode", mt5.ORDER_FILLING_IOC)
+        if filling_modes & mt5.ORDER_FILLING_FOK:
+            filling = mt5.ORDER_FILLING_FOK
+        elif filling_modes & mt5.ORDER_FILLING_IOC:
+            filling = mt5.ORDER_FILLING_IOC
+        else:
+            filling = mt5.ORDER_FILLING_RETURN
+
+        request = {
+            "action": mt5.TRADE_ACTION_PENDING,
+            "symbol": symbol,
+            "volume": float(lot),
+            "type": order_type,
+            "price": price,
+            "sl": float(sl),
+            "tp": float(tp),
+            "deviation": deviation,
+            "magic": 990100,  # Different magic number from K9 trend bot (990099)
+            "comment": comment,
+            "type_time": mt5.ORDER_TIME_GTC,
+            "type_filling": filling,
+        }
+
+        log.info(
+            "Limit order: %s %s %.2f lots @ %.5f  TP=%.5f  SL=%.5f",
+            direction, symbol, lot, price, tp, sl,
+        )
+
+        result = mt5.order_send(request)
+        if result is None or result.retcode != mt5.TRADE_RETCODE_DONE:
+            code = result.retcode if result else "None"
+            msg = result.comment if result else ""
+            raise MT5Error(f"place_limit_order failed — retcode={code}, comment={msg!r}")
+
+        log.info("Limit order placed: ticket=%d  %s @ %.5f", result.order, direction, price)
+        return result._asdict()
+
+    def cancel_order(self, order_ticket: int) -> None:
+        """
+        Cancel a pending order by ticket number.
+
+        Args:
+            order_ticket: The pending order ticket to cancel
+        """
+        self._check()
+        request = {
+            "action": mt5.TRADE_ACTION_REMOVE,
+            "order": order_ticket,
+        }
+        result = mt5.order_send(request)
+        if result is None or result.retcode != mt5.TRADE_RETCODE_DONE:
+            code = result.retcode if result else "None"
+            msg = result.comment if result else ""
+            raise MT5Error(f"cancel_order failed — ticket={order_ticket}, retcode={code}, comment={msg!r}")
+        log.info("Pending order cancelled: ticket=%d", order_ticket)
+
+    def cancel_all_pending(self, symbol: str, magic: int = 990100) -> int:
+        """
+        Cancel all pending orders for a symbol with matching magic number.
+
+        Args:
+            symbol: Trading symbol
+            magic: Magic number to filter by (default: grid bot magic)
+
+        Returns:
+            Number of orders cancelled
+        """
+        self._check()
+        orders = mt5.orders_get(symbol=symbol)
+        if not orders:
+            return 0
+
+        cancelled = 0
+        for order in orders:
+            if order.magic == magic:
+                try:
+                    self.cancel_order(order.ticket)
+                    cancelled += 1
+                except MT5Error as exc:
+                    log.warning("Failed to cancel order %d: %s", order.ticket, exc)
+
+        log.info("Cancelled %d pending orders for %s (magic=%d)", cancelled, symbol, magic)
+        return cancelled
+
+    def get_pending_orders(self, symbol: str, magic: int = 990100) -> list:
+        """
+        Get all pending orders for a symbol with matching magic number.
+
+        Args:
+            symbol: Trading symbol
+            magic: Magic number to filter by
+
+        Returns:
+            List of order dicts
+        """
+        self._check()
+        orders = mt5.orders_get(symbol=symbol)
+        if not orders:
+            return []
+        return [o._asdict() for o in orders if o.magic == magic]
+
+    def get_positions_by_magic(self, symbol: str, magic: int = 990100) -> list:
+        """
+        Get all open positions for a symbol with matching magic number.
+
+        Args:
+            symbol: Trading symbol
+            magic: Magic number to filter by
+
+        Returns:
+            List of position dicts
+        """
+        self._check()
+        positions = mt5.positions_get(symbol=symbol)
+        if not positions:
+            return []
+        return [p._asdict() for p in positions if p.magic == magic]
+
+    def close_position_market(
+        self, position_ticket: int, symbol: str, deviation: int = 50
+    ) -> dict:
+        """
+        Close a specific position by ticket (for grid kill-switch).
+        Alias for close_position with clear naming.
+        """
+        return self.close_position(position_ticket, symbol, deviation)

@@ -6,7 +6,7 @@ import sqlite3
 from datetime import datetime
 from typing import List, Optional
 
-from models import TradeRecord, TuningSuggestion
+from models import GridTradeRecord, TradeRecord, TuningSuggestion
 
 DB_PATH = os.environ.get("DB_PATH", "trades.db")
 
@@ -43,6 +43,20 @@ def init_db() -> None:
                 reasoning           TEXT    NOT NULL,
                 applied             INTEGER NOT NULL DEFAULT 0,
                 applied_at          TEXT
+            )
+        """)
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS grid_trades (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                direction       TEXT    NOT NULL,
+                entry_time      TEXT    NOT NULL,
+                exit_time       TEXT,
+                entry_price     REAL    NOT NULL,
+                exit_price      REAL,
+                tp_price        REAL    NOT NULL,
+                pips            REAL,
+                lot_size        REAL    NOT NULL,
+                running_equity  REAL
             )
         """)
         c.commit()
@@ -145,4 +159,83 @@ def _suggestion(row: sqlite3.Row) -> TuningSuggestion:
         reasoning=row["reasoning"],
         applied=bool(row["applied"]),
         applied_at=datetime.fromisoformat(row["applied_at"]) if row["applied_at"] else None,
+    )
+
+
+# ── Grid Trade Logging ───────────────────────────────────────
+
+def log_grid_trade(trade: GridTradeRecord) -> int:
+    """Log a completed grid trade to the database."""
+    with _conn() as c:
+        cur = c.execute(
+            """INSERT INTO grid_trades
+               (direction, entry_time, exit_time, entry_price, exit_price,
+                tp_price, pips, lot_size, running_equity)
+               VALUES (?,?,?,?,?,?,?,?,?)""",
+            (
+                trade.direction,
+                trade.entry_time.isoformat(),
+                trade.exit_time.isoformat() if trade.exit_time else None,
+                trade.entry_price,
+                trade.exit_price,
+                trade.tp_price,
+                trade.pips,
+                trade.lot_size,
+                trade.running_equity,
+            ),
+        )
+        c.commit()
+        return cur.lastrowid
+
+
+def get_grid_trades() -> List[GridTradeRecord]:
+    """Get all grid trades from the database."""
+    with _conn() as c:
+        rows = c.execute("SELECT * FROM grid_trades ORDER BY entry_time").fetchall()
+    return [_grid_trade(r) for r in rows]
+
+
+def get_grid_summary() -> dict:
+    """Get a summary of grid trading performance."""
+    with _conn() as c:
+        rows = c.execute(
+            "SELECT * FROM grid_trades WHERE exit_time IS NOT NULL ORDER BY entry_time"
+        ).fetchall()
+
+    if not rows:
+        return {
+            "total_trades": 0,
+            "total_pips": 0.0,
+            "win_rate": 0.0,
+            "avg_pips": 0.0,
+            "best_trade": 0.0,
+            "worst_trade": 0.0,
+        }
+
+    trades = [_grid_trade(r) for r in rows]
+    pips_list = [t.pips for t in trades if t.pips is not None]
+    wins = sum(1 for p in pips_list if p > 0)
+
+    return {
+        "total_trades": len(trades),
+        "total_pips": round(sum(pips_list), 2),
+        "win_rate": round(100 * wins / len(pips_list), 1) if pips_list else 0.0,
+        "avg_pips": round(sum(pips_list) / len(pips_list), 2) if pips_list else 0.0,
+        "best_trade": round(max(pips_list), 2) if pips_list else 0.0,
+        "worst_trade": round(min(pips_list), 2) if pips_list else 0.0,
+    }
+
+
+def _grid_trade(row: sqlite3.Row) -> GridTradeRecord:
+    return GridTradeRecord(
+        id=row["id"],
+        direction=row["direction"],
+        entry_time=datetime.fromisoformat(row["entry_time"]),
+        exit_time=datetime.fromisoformat(row["exit_time"]) if row["exit_time"] else None,
+        entry_price=row["entry_price"],
+        exit_price=row["exit_price"],
+        tp_price=row["tp_price"],
+        pips=row["pips"],
+        lot_size=row["lot_size"],
+        running_equity=row["running_equity"],
     )

@@ -66,5 +66,58 @@ Once running, monitor the bot via your browser:
 - **Status Dashboard**: `http://localhost:8000/status`
 - **Trade History DB**: `http://localhost:8000/trades`
 
+---
+
+## 📊 Grid Bot — Smart Grid Trading
+
+In addition to the trend-following strategy, K9 includes a **Smart Grid Trading Bot** that runs as a separate service. It places grids of limit orders above and below the current price, capturing profits from small price oscillations.
+
+### How the Smart Grid Works
+
+1. **Market Regime Detection**: Uses ADX to classify the market:
+   - **ADX < 20 (Ranging)**: Full grid active — maximum number of levels placed
+   - **ADX 20–25 (Neutral)**: Reduced grid — fewer levels, wider spacing
+   - **ADX > 25 (Trending)**: Grid **paused** — all pending orders cancelled to avoid fighting the trend
+
+2. **ATR-Based Dynamic Spacing**: Grid spacing adapts to volatility:
+   - Low volatility → Tighter grid (5-pip spacing, more frequent trades)
+   - High volatility → Wider grid (10-pip spacing, safer positioning)
+
+3. **Auto-Replenishment**: When a level hits TP, a fresh limit order is placed at the same price to keep the grid full.
+
+4. **Equity Kill-Switch**: If unrealized losses exceed 10% of account equity, ALL positions are closed immediately.
+
+### Running the Grid Bot
+```bash
+uvicorn grid_main:app --host 0.0.0.0 --port 8001
+```
+
+> ⚠️ **The grid bot runs on port 8001** (separate from the trend bot on port 8000). You can run both simultaneously.
+
+### Grid Bot API Endpoints
+- **Grid Status**: `http://localhost:8001/grid/status`
+- **Grid Trades**: `http://localhost:8001/grid/trades`
+- **Performance Summary**: `http://localhost:8001/grid/summary`
+- **Configuration**: `http://localhost:8001/grid/config`
+- **Stop Grid** (POST): `http://localhost:8001/grid/stop`
+- **Reset Kill-Switch** (POST): `http://localhost:8001/grid/reset-killswitch`
+
+### Grid Configuration
+
+All grid settings are in `.env`. Key parameters:
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `GRID_LEVELS_ABOVE` | 5 | Number of SELL LIMIT levels above price |
+| `GRID_LEVELS_BELOW` | 5 | Number of BUY LIMIT levels below price |
+| `GRID_TP_PIPS` | 7 | Take-profit per level (pips) |
+| `GRID_MIN_SPACING_PIPS` | 5 | Minimum grid spacing |
+| `GRID_MAX_SPACING_PIPS` | 10 | Maximum grid spacing |
+| `GRID_KILL_SWITCH_PCT` | 10 | Max equity drawdown % |
+| `GRID_LOT_SIZE` | 0.01 | Volume per grid level |
+| `GRID_POLL_SECONDS` | 2 | Polling interval (faster than trend bot) |
+
+---
+
 ## ⚠️ Disclaimer
 **This software is for educational and research purposes only.** Foreign exchange and CFD trading carries a high level of risk and may not be suitable for all investors. The past performance of this algorithm does not guarantee future results. **ALWAYS run this system on a Demo account for a minimum of 4 weeks (or 200 trades) to validate your broker's spread, latency, and slippage conditions before ever risking real capital.**
